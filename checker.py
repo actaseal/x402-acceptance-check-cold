@@ -47,8 +47,9 @@ prose spec alone -- see REPORT.md for where a second reading is
 possible):
     verified        -- key step passed, no malformed condition, authority resolves.  exit 0
     malformed       -- one or more malformed conditions (report-all).                exit 1
-    key_unresolved  -- confirming party's kid is not in trust_material.              exit 2
-    signature_invalid -- kid resolved, but the Ed25519 check failed.                 exit 2
+                       Includes signature_invalid, as the ONLY condition: kid
+                       resolved, but the Ed25519 check failed (key_step records it).
+    key_unresolved  -- no usable, non-small-order key for the kid in trust_material. exit 2
     unknown         -- acceptance_authority_unresolved, and nothing else malformed.  exit 2
     no_record       -- no acceptance object was supplied at all.                     exit 2
 """
@@ -57,10 +58,19 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime
 
-from ed25519_verify import Ed25519VerifyError, verify as ed25519_verify_raw
+from ed25519_verify import (
+    IDENTITY,
+    Ed25519VerifyError,
+    _decode_point,
+    _point_equal,
+    _point_mul,
+    verify as ed25519_verify_raw,
+)
 
+ACCEPTANCE_VERSION = "acceptance-record-v0"
 VALID_DISPOSITIONS = ("accepted", "rejected", "disputed")
 
 MALFORMED_CONDITIONS = (
@@ -71,24 +81,48 @@ MALFORMED_CONDITIONS = (
     "acceptance_precedes_outcome",
     "acceptance_record_digest_mismatch",
     "acceptance_member_invalid",
+    "signature_invalid",
 )
 
 
+_B64URL = re.compile(r"[A-Za-z0-9_-]*")
+
+
 def _b64url_decode(s: str) -> bytes:
-    padded = s + "=" * (-len(s) % 4)
-    return base64.urlsafe_b64decode(padded)
+    """Base64url without padding (RFC 7515 section 2), strictly. The
+    stdlib decoder silently drops characters outside the alphabet and
+    accepts '=' padding, so the alphabet and the length are checked
+    here; ValueError otherwise."""
+    if not _B64URL.fullmatch(s) or len(s) % 4 == 1:
+        raise ValueError("not base64url without padding")
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-def _parse_iso8601(value: str) -> datetime:
-    # Vectors use "...Z" suffix; datetime.fromisoformat before 3.11
-    # doesn't accept a bare "Z", so normalize it to "+00:00" ourselves
-    # rather than require a specific Python minor version.
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _sha256_hex(value) -> str | None:
+    """`value` if it is a well-typed *_sha256 member (exactly 64 lowercase
+    hex characters), else None."""
+    return value if isinstance(value, str) and _SHA256_HEX.fullmatch(value) else None
+
+
+_TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
+
+
+def _parse_timestamp(value) -> datetime | None:
+    """The -03 5.3.2 form exactly: YYYY-MM-DDTHH:MM:SS.mmmZ, UTC, three
+    fractional digits. Any other spelling -- RFC 3339 without the
+    fraction, with an offset (even one naming the same instant), lower
+    case, a space for the T -- is ill-typed and returns None, so
+    ordering is only ever compared between two values of this form.
+    Returned naive: every accepted value is UTC."""
+    if not isinstance(value, str) or not _TIMESTAMP.fullmatch(value):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:  # right shape, not a real date/time (month 13, hour 24, ...)
+        return None
 
 
 def _jcs_bytes(obj) -> bytes:
@@ -101,26 +135,49 @@ def _jcs_bytes(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+def _is_small_order(raw: bytes) -> bool:
+    """True if `raw` encodes one of the 8 points whose order divides 8
+    (the identity among them). Under such a key, or such an R, one
+    signature verifies for every message, so it binds nobody; RFC 8032
+    does not require refusing them, this checker does. A string that is
+    not a curve point at all is not "small order" -- verification
+    rejects it separately."""
+    try:
+        point = _decode_point(raw)
+    except ValueError:
+        return False
+    return _point_equal(_point_mul(8, point), IDENTITY)
+
+
 def _find_key(trust_material: dict, kid) -> bytes | None:
+    """The trust-material key for `kid`, or None if there is no usable
+    one. The FIRST Ed25519 entry (kty OKP, crv Ed25519) carrying that
+    kid decides: if it is unusable (bad base64url, not 32 bytes, small
+    order) the kid is unresolved, and a later duplicate does not
+    rescue it."""
     if not isinstance(trust_material, dict):
         return None
-    for key in trust_material.get("keys") or []:
-        if not isinstance(key, dict):
-            continue
-        if key.get("kid") == kid and key.get("kty") == "OKP" and key.get("crv") == "Ed25519":
+    keys = trust_material.get("keys")
+    if not isinstance(keys, list):
+        return None
+    for key in keys:
+        if isinstance(key, dict) and key.get("kid") == kid and key.get("kty") == "OKP" and key.get("crv") == "Ed25519":
             x = key.get("x")
             if not isinstance(x, str):
-                continue
+                return None
             try:
                 raw = _b64url_decode(x)
-            except Exception:
-                continue
-            if len(raw) == 32:
-                return raw
+            except ValueError:
+                return None
+            if len(raw) != 32 or _is_small_order(raw):
+                return None
+            return raw
     return None
 
 
-def _result(result: str, *, exit_code: int, disposition=None, conditions=None, policy_refusal=None) -> dict:
+def _result(
+    result: str, *, exit_code: int, disposition=None, conditions=None, policy_refusal=None, key_step=None
+) -> dict:
     out = {
         "result": result,
         "exit_code": exit_code,
@@ -129,6 +186,8 @@ def _result(result: str, *, exit_code: int, disposition=None, conditions=None, p
     }
     if policy_refusal is not None:
         out["policy_refusal"] = policy_refusal
+    if key_step is not None:
+        out["key_step"] = key_step
     return out
 
 
@@ -141,7 +200,9 @@ def check_acceptance(case: dict) -> dict:
     accepted_record = case.get("accepted_record") or {}
     delegation = case.get("delegation") or {}
     trust_material = case.get("trust_material") or {}
-    trust_material_complete = bool(case.get("trust_material_complete", False))
+    # A declaration only as the JSON value true; "true", 1, etc. are not
+    # one (-03 5.4.2: omitting the input is not a declaration either).
+    trust_material_complete = case.get("trust_material_complete") is True
 
     if acceptance is None:
         return _result("no_record", exit_code=2, disposition="not_responded")
@@ -159,43 +220,82 @@ def check_acceptance(case: dict) -> dict:
             "malformed", exit_code=1, disposition=None, conditions=["acceptance_member_invalid"]
         )
 
+    # --- Envelope, before the key step: all three members are base64url
+    # without padding, and the protected header decodes to a JSON object.
+    # The payload's *content* is not looked at yet: the key step needs
+    # only the header's kid, and the payload is not trusted until the
+    # signature over it has been checked. ---
+    invalid = lambda: _result(  # noqa: E731
+        "malformed", exit_code=1, disposition=None, conditions=["acceptance_member_invalid"]
+    )
     try:
         protected = json.loads(_b64url_decode(protected_b64))
-        payload = json.loads(_b64url_decode(payload_b64))
+        payload_bytes = _b64url_decode(payload_b64)
         signature_bytes = _b64url_decode(signature_b64)
-    except Exception:
-        return _result(
-            "malformed", exit_code=1, disposition=None, conditions=["acceptance_member_invalid"]
-        )
+    except (ValueError, RecursionError):  # ValueError covers JSONDecodeError, UnicodeDecodeError
+        return invalid()
 
-    if not isinstance(protected, dict) or not isinstance(payload, dict):
-        return _result(
-            "malformed", exit_code=1, disposition=None, conditions=["acceptance_member_invalid"]
-        )
+    if not isinstance(protected, dict):
+        return invalid()
 
     kid = protected.get("kid")
+    if protected.get("alg") != "EdDSA" or not isinstance(kid, str):
+        # Found before the key step: with no usable kid there is nothing
+        # to look up, so this is not key_unresolved.
+        return invalid()
 
     # --- Key step (draft-krausz-verification-state-03 5.4.2), first and
     # evaluation-stopping on key_unresolved or signature_invalid. ---
     pubkey = _find_key(trust_material, kid)
     if pubkey is None:
-        return _result("key_unresolved", exit_code=2, disposition=None, policy_refusal=trust_material_complete)
+        return _result(
+            "key_unresolved",
+            exit_code=2,
+            disposition=None,
+            policy_refusal=True if trust_material_complete else None,
+            key_step="key_unresolved",
+        )
 
     signing_input = (protected_b64 + "." + payload_b64).encode("ascii")
     try:
-        sig_ok = len(signature_bytes) == 64 and ed25519_verify_raw(pubkey, signing_input, signature_bytes)
+        sig_ok = (
+            len(signature_bytes) == 64
+            and not _is_small_order(signature_bytes[:32])  # a small-order R is signature_invalid
+            and ed25519_verify_raw(pubkey, signing_input, signature_bytes)
+        )
     except Ed25519VerifyError:
         sig_ok = False
     if not sig_ok:
-        return _result("signature_invalid", exit_code=2, disposition=None)
+        # A confirmed finding, not "no check ran": it surfaces as
+        # malformed with signature_invalid as the only condition.
+        return _result(
+            "malformed",
+            exit_code=1,
+            disposition=None,
+            conditions=["signature_invalid"],
+            key_step="signature_invalid",
+        )
 
-    # --- Malformed conditions (report-all), only reached once the
-    # signature itself is confirmed genuine. ---
+    # --- Payload, now that the signature over it is genuine. ---
+    try:
+        payload = json.loads(payload_bytes)
+    except (ValueError, RecursionError):
+        return invalid()
+    if not isinstance(payload, dict):
+        return invalid()
+
+    # --- Malformed conditions (report-all). ---
     conditions: set[str] = set()
 
     def _str_field(obj, name):
         v = obj.get(name) if isinstance(obj, dict) else None
         return v if isinstance(v, str) and v else None
+
+    # Required, and exactly this string: absent, not a string, or any
+    # other value is malformed (not "unknown": a different version is
+    # not a limit of the verifier, it is not this record format).
+    if payload.get("acceptance_version") != ACCEPTANCE_VERSION:
+        conditions.add("acceptance_member_invalid")
 
     confirming_party = _str_field(payload, "confirming_party")
     if confirming_party is None:
@@ -209,48 +309,52 @@ def check_acceptance(case: dict) -> dict:
         # invalid member, not trusted as the record's disposition.
         conditions.add("acceptance_member_invalid")
 
-    payload_terms = _str_field(payload, "terms_sha256")
-    record_terms = _str_field(accepted_record, "terms_sha256")
+    # Type-check suppression: an ill-typed member raises
+    # acceptance_member_invalid only, never the mismatch that depends on
+    # it. A *_sha256 member is well-typed iff it is exactly 64 lowercase
+    # hex characters (-03 5.3.2), not merely any non-empty string.
+    payload_terms = _sha256_hex(payload.get("terms_sha256"))
+    record_terms = _sha256_hex(accepted_record.get("terms_sha256") if isinstance(accepted_record, dict) else None)
     if payload_terms is None or record_terms is None:
         conditions.add("acceptance_member_invalid")
     elif payload_terms != record_terms:
         conditions.add("acceptance_terms_digest_mismatch")
 
-    payload_outcome = _str_field(payload, "outcome_sha256")
-    record_outcome = _str_field(accepted_record, "outcome_sha256")
+    payload_outcome = _sha256_hex(payload.get("outcome_sha256"))
+    record_outcome = _sha256_hex(accepted_record.get("outcome_sha256") if isinstance(accepted_record, dict) else None)
     if payload_outcome is None or record_outcome is None:
         conditions.add("acceptance_member_invalid")
     elif payload_outcome != record_outcome:
         conditions.add("acceptance_outcome_digest_mismatch")
 
-    accepted_at_raw = _str_field(payload, "accepted_at")
-    outcome_at_raw = _str_field(accepted_record, "outcome_at")
-    accepted_at = outcome_at = None
-    if accepted_at_raw is None or outcome_at_raw is None:
+    accepted_at = _parse_timestamp(payload.get("accepted_at"))
+    outcome_at = _parse_timestamp(accepted_record.get("outcome_at") if isinstance(accepted_record, dict) else None)
+    if accepted_at is None or outcome_at is None:
         conditions.add("acceptance_member_invalid")
-    else:
-        try:
-            accepted_at = _parse_iso8601(accepted_at_raw)
-            outcome_at = _parse_iso8601(outcome_at_raw)
-        except ValueError:
-            conditions.add("acceptance_member_invalid")
-    if accepted_at is not None and outcome_at is not None and accepted_at < outcome_at:
+    elif accepted_at < outcome_at:
         # Strict: equal-instant is NOT "precedes" (spec: "An acceptance
         # at the outcome's own instant does not precede it").
         conditions.add("acceptance_precedes_outcome")
 
-    payload_record_digest = _str_field(payload, "accepted_record_sha256")
+    issuer = _str_field(accepted_record, "issuer")
+    issuer_kid = _str_field(accepted_record, "issuer_kid")
+
+    # The record digest depends on the supplied record being well-typed
+    # throughout; if any member the checker reads from it is ill-typed
+    # (raised above or below), that is the only finding, not a digest
+    # mismatch over a record that is not one.
+    record_well_typed = (
+        isinstance(accepted_record, dict)
+        and None not in (record_terms, record_outcome, outcome_at, issuer, issuer_kid)
+    )
+    payload_record_digest = _sha256_hex(payload.get("accepted_record_sha256"))
     if payload_record_digest is None:
         conditions.add("acceptance_member_invalid")
-    elif not isinstance(accepted_record, dict) or not accepted_record:
-        conditions.add("acceptance_member_invalid")
-    else:
+    elif record_well_typed:
         computed = hashlib.sha256(_jcs_bytes(accepted_record)).hexdigest()
         if computed != payload_record_digest:
             conditions.add("acceptance_record_digest_mismatch")
 
-    issuer = _str_field(accepted_record, "issuer")
-    issuer_kid = _str_field(accepted_record, "issuer_kid")
     if issuer is None or issuer_kid is None:
         conditions.add("acceptance_member_invalid")
     else:

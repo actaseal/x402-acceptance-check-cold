@@ -21,16 +21,17 @@ import sys
 import urllib.request
 from pathlib import Path
 
-EXPECTED_SHA256 = "c7f5513a6292a8cb7a8049b30113ed9bb786843717c62e7f806c73843c04e7e0"
+EXPECTED_SHA256 = "464ee7933a17c3ab52db32b93ac21f555a026781f4a8a132b91977eb4fb02882"
 
-# Pinned to the commit that last touched this exact vectors.json in its
-# public source repo (babyblueviper1/preaction-governance-conformance),
-# not vendored here and not pointed at a moving branch -- the fetched
-# bytes are still sha256-verified against EXPECTED_SHA256 regardless,
-# so this URL is a convenience, not the source of trust.
+# Pinned to commit 37fdb85 of the public source repo
+# (babyblueviper1/preaction-governance-conformance; the 46-vector
+# corpus -- vectors.json itself last changed at 536681b), not vendored
+# here and not pointed at a moving branch -- the fetched bytes are
+# still sha256-verified against EXPECTED_SHA256 regardless, so this URL
+# is a convenience, not the source of trust.
 VECTORS_URL = (
     "https://raw.githubusercontent.com/babyblueviper1/preaction-governance-conformance/"
-    "646588cbab5e3cfe0824af6bb83ee1779f0f67ee/examples/acceptance-record-cold/vectors.json"
+    "37fdb856d8fef1c410e69bbd81070da67dd945d8/examples/acceptance-record-cold/vectors.json"
 )
 
 
