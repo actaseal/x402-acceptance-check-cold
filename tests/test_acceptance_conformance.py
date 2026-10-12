@@ -199,6 +199,34 @@ class Fix7TypeCheckSuppression(VectorCase):
                     self.assertEqual((got["result"], got["conditions"]), ("malformed", ["acceptance_member_invalid"]))
 
 
+# disposition (37fdb85 README: "reported only with verified and unknown ...
+# null on malformed and key_unresolved, and not_responded on no_record") ------
+class DispositionOnlyWhereARecordIsClean(unittest.TestCase):
+    def test_null_on_every_malformed_and_key_unresolved_vector(self):
+        for vid, v in VECTORS.items():
+            got = checker.check_acceptance(v["case"])
+            if got["result"] in ("malformed", "key_unresolved"):
+                with self.subTest(vector=vid, result=got["result"]):
+                    self.assertIsNone(got["disposition"])
+
+    def test_malformed_record_with_a_parseable_disposition_reports_none(self):
+        # signed disposition "accepted", but the terms digest does not match
+        got = checker.check_acceptance(VECTORS["acc-terms-digest-mismatch"]["case"])
+        self.assertEqual((got["result"], got["conditions"]), ("malformed", ["acceptance_terms_digest_mismatch"]))
+        self.assertIsNone(got["disposition"])
+
+    def test_still_reported_with_verified_and_unknown_and_no_record(self):
+        for vid, want in (
+            ("acc-accepted-verified", "accepted"),
+            ("acc-rejected-verified", "rejected"),
+            ("acc-disputed-verified", "disputed"),
+            ("acc-authority-unresolved", "accepted"),
+            ("acc-no-record-not-responded", "not_responded"),
+        ):
+            with self.subTest(vector=vid):
+                self.assertEqual(checker.check_acceptance(VECTORS[vid]["case"])["disposition"], want)
+
+
 class AllVectors(unittest.TestCase):
     def test_every_vector_agrees(self):
         bad = [vid for vid in VECTORS if not agrees(vid)]

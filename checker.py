@@ -372,7 +372,10 @@ def check_acceptance(case: dict) -> dict:
     reported_disposition = disposition_raw if disposition_valid else None
 
     if conditions:
-        return _result("malformed", exit_code=1, disposition=reported_disposition, conditions=conditions)
+        # The disposition is reported only where a signed, well-formed
+        # record exists to report it from (verified, unknown); it is null
+        # on malformed, however parseable the member itself was.
+        return _result("malformed", exit_code=1, disposition=None, conditions=conditions)
 
     # --- Authority step, only reached when nothing above is malformed,
     # so "unknown" is never stacked on a malformed finding. ---
