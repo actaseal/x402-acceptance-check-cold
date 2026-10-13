@@ -5,10 +5,12 @@ ported from or compared against any other codebase. Uses the standard
 unified/extended twisted-Edwards coordinates for the curve
 edwards25519 (RFC 8032 section 5.1) to make scalar multiplication and
 point addition constant-structure and avoid special-casing the point
-at infinity. Verification follows RFC 8032 section 5.1.7 exactly,
+at infinity. Verification follows RFC 8032 section 5.1.7,
 including the cofactor-multiplication form of the final check
-(8*S*B == 8*R + 8*k*A) so small-order-component edge cases in R or A
-are handled the same way the RFC specifies, not generically ignored.
+(8*S*B == 8*R + 8*k*A), with one deliberate addition: a public key or R
+that is itself a small-order point is refused (verify() returns False).
+The RFC allows those, and under them a single signature verifies every
+message, so this is stricter than the RFC on purpose.
 """
 from __future__ import annotations
 
@@ -108,6 +110,21 @@ def _encode_point(point) -> bytes:
     return bytes(out)
 
 
+def _point_has_small_order(point) -> bool:
+    return _point_equal(_point_mul(8, point), IDENTITY)
+
+
+def is_small_order(data: bytes) -> bool:
+    """True if the 32-byte encoding `data` is one of the 8 points whose
+    order divides 8 (the identity among them). False for any other
+    point, and also for bytes that are not a curve point at all (those
+    are rejected separately, by verify())."""
+    try:
+        return _point_has_small_order(_decode_point(data))
+    except ValueError:
+        return False
+
+
 class Ed25519VerifyError(ValueError):
     """Raised for a malformed key/signature or a failed verification."""
 
@@ -118,7 +135,11 @@ def verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
     signature). Returns False for a cryptographically failed
     signature; raises Ed25519VerifyError for structurally malformed
     input (wrong lengths, a public key or R that isn't a valid curve
-    point, or S outside [0, L))."""
+    point, or S outside [0, L)). Also returns False, whatever the
+    message, if the public key or R is a small-order point: RFC 8032
+    does not require refusing those, but under such a key one signature
+    (R = identity, S = 0) verifies every message, so accepting it would
+    bind nobody."""
     if len(public_key) != 32:
         raise Ed25519VerifyError("public key must be 32 bytes")
     if len(signature) != 64:
@@ -135,6 +156,9 @@ def verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
         r_point = _decode_point(r_bytes)
     except ValueError as exc:
         raise Ed25519VerifyError(str(exc)) from exc
+
+    if _point_has_small_order(a_point) or _point_has_small_order(r_point):
+        return False
 
     k = int.from_bytes(hashlib.sha512(r_bytes + public_key + message).digest(), "little") % L
 

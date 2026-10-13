@@ -11,7 +11,10 @@ input).
 standard library. It was self-tested against real signatures produced by the
 `cryptography` package across four message lengths (empty, 11 bytes, 64
 zero bytes, 1000 bytes) plus tampered-signature and tampered-message cases,
-*before* being used in the checker.
+*before* being used in the checker. It is stricter than RFC 8032 in one
+deliberate way: `verify()` returns `False` for a public key or `R` that is a
+small-order point (under such a key one signature verifies every message), so
+it is safe to use on its own.
 
 ## Measured state (2026-10-13)
 
@@ -24,9 +27,10 @@ itself last changed at `536681b`), sha256
 is fetched over the network and hash-verified by `run_vectors.py` before every
 run; it is pinned by commit id, not vendored here.
 
-- Measured at checker commit `05dff1e` (46/46), and again after the
-  disposition change that follows it (46/46; `python3 -m unittest discover
-  -s tests`: 18 tests, all pass).
+- Measured at checker commit `05dff1e` (46/46), and again after each later
+  change (the disposition fix, then the `ed25519_verify` and canonical-base64url
+  hardening): 46/46, and `python3 -m unittest discover -s tests` runs 28
+  tests, all passing.
 - Before that: **22/25** at upstream `646588c` with checker `b06ca87` (the
   original build), and 23/46 when that same original checker was run against
   the 46-vector file under the strict comparison below. The three original
@@ -74,15 +78,6 @@ at `37fdb85`; `tools/` was still not opened. The vector builder and runner
 contributing two vectors to that repo (the same-record key-step pair,
 `a747e46`), before `05dff1e`.
 
-## Known limits
-
-- `ed25519_verify.py` is unchanged. The small-order refusals (key and `R`)
-  live in `checker.py`, which calls into it. `ed25519_verify.verify()` on its
-  own still returns `True` for an identity key with `R` = identity, `S` = 0 on
-  any message (checked 2026-10-13); do not use it standalone as a verifier.
-- `checker.py` imports `_decode_point`, `_point_mul` and `_point_equal` from
-  `ed25519_verify.py`, underscore-private helpers of a sibling module.
-
 ## Running it
 
 ```sh
@@ -113,11 +108,14 @@ header.
 ## Files
 
 - `checker.py` — the condition-checking engine.
-- `ed25519_verify.py` — from-scratch RFC 8032 Ed25519 verification.
+- `ed25519_verify.py` — from-scratch RFC 8032 Ed25519 verification; refuses
+  small-order keys and `R` (`verify()` returns `False`).
 - `run_vectors.py` — fetches the pinned vectors, verifies their hash, runs
   the checker against all 46, prints the agree/disagree table (result,
   conditions, disposition only).
 - `tests/test_acceptance_conformance.py` — one test class per fix, plus the
   strict all-46 comparison.
+- `tests/test_ed25519_verify.py` — `verify()` on its own: all 8 small-order
+  points as key and as `R`, genuine and tampered signatures, malformed input.
 - `REPORT.md` — measured results, the history from 22/25 to 46/46, and what
   was changed at each step.

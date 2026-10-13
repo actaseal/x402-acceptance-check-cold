@@ -26,9 +26,10 @@ fetched and verified by `run_vectors.py` before every run.
 
 ## Result: 46/46 agree (2026-10-13)
 
-Measured at checker commit `05dff1e` and again after the disposition change
-that follows it; both 46/46. Two comparisons exist and they are not equally
-strict:
+Measured at checker commit `05dff1e` and again after each later change (the
+disposition fix, then the `ed25519_verify` and canonical-base64url hardening
+described below); every time 46/46. Two comparisons exist and they are not
+equally strict:
 
 | Comparison | Compares | 46 vectors |
 |---|---|---|
@@ -37,7 +38,7 @@ strict:
 
 `run_vectors.py` does **not** compare `key_step` or `policy_refusal`, both of
 which the vectors pin; a checker that omitted them would still pass it. The
-tests would not. The full suite is 18 tests (`python3 -m unittest discover -s
+tests would not. The full suite is 28 tests (`python3 -m unittest discover -s
 tests`), all passing.
 
 ## History: 22/25, then 23/46, then 46/46
@@ -76,11 +77,11 @@ run failing first (`tests/test_acceptance_conformance.py`, one class per fix):
    small-order points (identity included) is `key_unresolved`, with
    `policy_refusal` if declared complete; a signature whose `R` is small-order
    is `signature_invalid`. Under such a key one signature verifies every
-   message, so an acceptance under it binds nobody. The refusal is in
-   `checker.py`; `ed25519_verify.py` is unchanged and `verify()` alone still
-   accepts that forgery.
+   message, so an acceptance under it binds nobody. At `05dff1e` the refusal
+   lived only in `checker.py`; see "After `cfc6eeb`" below for `verify()`.
 2. **Strict base64url without padding** (RFC 7515 §2): alphabet and length are
    checked, because the stdlib decoder drops stray characters and accepts `=`.
+   (Canonical trailing bits were added later; see below.)
 3. **`acceptance_version`** is required and exactly `acceptance-record-v0`;
    absent, not a string, or another value is `acceptance_member_invalid`.
 4. **`signature_invalid` result model.** `malformed` with that single
@@ -106,6 +107,25 @@ with a good `disposition: "accepted"` and a terms mismatch reported
 changed to match the README and is covered by tests written first (20
 failures before, 0 after).
 
+**After `cfc6eeb`: `verify()` is safe standalone, and base64url is canonical.**
+Neither moved the 46/46 (no vector pins either); both have tests written first
+(24 failures before, 0 after).
+
+- `ed25519_verify.verify()` returns `False` for a small-order public key or a
+  small-order `R` (all 8 small-order points tested, as key and as `R`), where
+  before it returned `True` for the identity key with `R` = identity, `S` = 0
+  (and for a small-order `R` under a real key). It still raises
+  `Ed25519VerifyError` for structurally malformed input, and genuine signatures
+  still verify. `checker.py` keeps its own split: a small-order key is
+  `key_unresolved`, a small-order `R` is `signature_invalid`; it now calls a
+  public `is_small_order()` in `ed25519_verify.py` instead of private helpers.
+- A base64url string with non-zero unused trailing bits (a second spelling of
+  the same bytes, which the stdlib decoder accepts) is rejected: the decoded
+  bytes must re-encode to exactly the input. For the acceptance members that is
+  `acceptance_member_invalid` before the key step; for a trust-material `x` it
+  is an unusable key, so `key_unresolved`. Before, a record with a re-spelled
+  signature verified.
+
 ## Sentence-8 choices
 
 | Input | This checker |
@@ -125,8 +145,8 @@ Recorded because they are this checker's reading, not the corpus's:
   `signature_invalid`. Only the base64url encoding and the protected header
   are checked before it.
 - The first-entry-decides rule above, for the unusable-first-entry case.
-- Trailing non-zero bits in a base64url string are not rejected; the check is
-  the RFC 7515 §2 alphabet and no padding.
+- Non-canonical base64url (non-zero trailing bits) is rejected, which is
+  stricter than the sentence-2 wording alone requires.
 
 ## Independence
 

@@ -112,6 +112,49 @@ class Fix2StrictBase64url(VectorCase):
                     self.assertEqual((got["result"], got["conditions"]), ("malformed", ["acceptance_member_invalid"]))
 
 
+_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+
+def noncanonical(s):
+    """Same decoded bytes, a different string: the unused trailing bits of the
+    last character set to non-zero. Only strings with len % 4 in (2, 3) have any."""
+    bits = 4 if len(s) % 4 == 2 else 2
+    i = _B64.index(s[-1])
+    assert i & ((1 << bits) - 1) == 0, "input was not canonical"
+    return s[:-1] + _B64[i | 1]
+
+
+class Fix2bCanonicalBase64url(unittest.TestCase):
+    def test_nonzero_trailing_bits_are_malformed_before_the_key_step(self):
+        tested = 0
+        for member in ("protected", "payload", "signature"):
+            c = _case("acc-accepted-verified")
+            if len(c["acceptance"][member]) % 4 == 0:
+                continue  # whole number of 3-byte groups: no trailing bits to set
+            c["acceptance"][member] = noncanonical(c["acceptance"][member])
+            tested += 1
+            with self.subTest(member=member):
+                got = checker.check_acceptance(c)
+                self.assertEqual((got["result"], got["conditions"]), ("malformed", ["acceptance_member_invalid"]))
+        self.assertGreaterEqual(tested, 2)
+
+    def test_noncanonical_signature_is_not_a_second_spelling_of_a_valid_one(self):
+        # Same 64 signature bytes, so the pre-fix checker verified it. The record must
+        # not verify under two different encodings.
+        c = _case("acc-accepted-verified")
+        self.assertEqual(checker.check_acceptance(c)["result"], "verified")
+        c["acceptance"]["signature"] = noncanonical(c["acceptance"]["signature"])
+        self.assertNotEqual(checker.check_acceptance(c)["result"], "verified")
+
+    def test_noncanonical_trust_material_x_is_an_unusable_key(self):
+        c = _case("acc-accepted-verified")
+        key = next(k for k in c["trust_material"]["keys"] if k["kid"] == "cp-1")
+        key["x"] = noncanonical(key["x"])  # same 32 key bytes, non-canonical spelling
+        got = checker.check_acceptance(c)
+        self.assertEqual(got["result"], "key_unresolved")
+        self.assertEqual(got["key_step"], "key_unresolved")
+
+
 # 3 -------------------------------------------------------------------------
 class Fix3Version(VectorCase):
     IDS = ("acc-version-absent", "acc-version-not-string", "acc-version-other-value")

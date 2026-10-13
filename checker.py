@@ -61,14 +61,7 @@ import json
 import re
 from datetime import datetime
 
-from ed25519_verify import (
-    IDENTITY,
-    Ed25519VerifyError,
-    _decode_point,
-    _point_equal,
-    _point_mul,
-    verify as ed25519_verify_raw,
-)
+from ed25519_verify import Ed25519VerifyError, is_small_order, verify as ed25519_verify_raw
 
 ACCEPTANCE_VERSION = "acceptance-record-v0"
 VALID_DISPOSITIONS = ("accepted", "rejected", "disputed")
@@ -89,13 +82,18 @@ _B64URL = re.compile(r"[A-Za-z0-9_-]*")
 
 
 def _b64url_decode(s: str) -> bytes:
-    """Base64url without padding (RFC 7515 section 2), strictly. The
-    stdlib decoder silently drops characters outside the alphabet and
-    accepts '=' padding, so the alphabet and the length are checked
-    here; ValueError otherwise."""
+    """Base64url without padding (RFC 7515 section 2), strictly and
+    canonically. The stdlib decoder silently drops characters outside
+    the alphabet, accepts '=' padding, and ignores non-zero unused
+    trailing bits (so two different strings decode to the same bytes);
+    the alphabet and the length are checked here, and the decoded bytes
+    must re-encode to exactly `s`. ValueError otherwise."""
     if not _B64URL.fullmatch(s) or len(s) % 4 == 1:
         raise ValueError("not base64url without padding")
-    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+    raw = base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+    if base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii") != s:
+        raise ValueError("non-canonical base64url: non-zero trailing bits")
+    return raw
 
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
@@ -135,20 +133,6 @@ def _jcs_bytes(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _is_small_order(raw: bytes) -> bool:
-    """True if `raw` encodes one of the 8 points whose order divides 8
-    (the identity among them). Under such a key, or such an R, one
-    signature verifies for every message, so it binds nobody; RFC 8032
-    does not require refusing them, this checker does. A string that is
-    not a curve point at all is not "small order" -- verification
-    rejects it separately."""
-    try:
-        point = _decode_point(raw)
-    except ValueError:
-        return False
-    return _point_equal(_point_mul(8, point), IDENTITY)
-
-
 def _find_key(trust_material: dict, kid) -> bytes | None:
     """The trust-material key for `kid`, or None if there is no usable
     one. The FIRST Ed25519 entry (kty OKP, crv Ed25519) carrying that
@@ -169,7 +153,9 @@ def _find_key(trust_material: dict, kid) -> bytes | None:
                 raw = _b64url_decode(x)
             except ValueError:
                 return None
-            if len(raw) != 32 or _is_small_order(raw):
+            # A small-order key binds nobody (one signature verifies every
+            # message under it): not a key of the confirming party.
+            if len(raw) != 32 or is_small_order(raw):
                 return None
             return raw
     return None
@@ -260,7 +246,7 @@ def check_acceptance(case: dict) -> dict:
     try:
         sig_ok = (
             len(signature_bytes) == 64
-            and not _is_small_order(signature_bytes[:32])  # a small-order R is signature_invalid
+            and not is_small_order(signature_bytes[:32])  # a small-order R is signature_invalid
             and ed25519_verify_raw(pubkey, signing_input, signature_bytes)
         )
     except Ed25519VerifyError:
