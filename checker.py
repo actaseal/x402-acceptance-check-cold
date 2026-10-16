@@ -61,7 +61,7 @@ import json
 import re
 from datetime import datetime
 
-from ed25519_verify import Ed25519VerifyError, is_small_order, verify as ed25519_verify_raw
+from ed25519_verify import Ed25519VerifyError, is_mixed_order, is_small_order, verify as ed25519_verify_raw
 
 ACCEPTANCE_VERSION = "acceptance-record-v0"
 VALID_DISPOSITIONS = ("accepted", "rejected", "disputed")
@@ -154,8 +154,10 @@ def _find_key(trust_material: dict, kid) -> bytes | None:
             except ValueError:
                 return None
             # A small-order key binds nobody (one signature verifies every
-            # message under it): not a key of the confirming party.
-            if len(raw) != 32 or is_small_order(raw):
+            # message under it), and a mixed-order key makes the result depend
+            # on the verifier's equation (sentence 9): neither is a key of the
+            # confirming party.
+            if len(raw) != 32 or is_small_order(raw) or is_mixed_order(raw):
                 return None
             return raw
     return None
@@ -247,6 +249,7 @@ def check_acceptance(case: dict) -> dict:
         sig_ok = (
             len(signature_bytes) == 64
             and not is_small_order(signature_bytes[:32])  # a small-order R is signature_invalid
+            and not is_mixed_order(signature_bytes[:32])  # so is a mixed-order R (sentence 9)
             and ed25519_verify_raw(pubkey, signing_input, signature_bytes)
         )
     except Ed25519VerifyError:

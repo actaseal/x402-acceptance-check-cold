@@ -270,11 +270,20 @@ class DispositionOnlyWhereARecordIsClean(unittest.TestCase):
                 self.assertEqual(checker.check_acceptance(VECTORS[vid]["case"])["disposition"], want)
 
 
+# 9 -------------------------------------------------------------------------
+class Fix9MixedOrder(VectorCase):
+    IDS = (
+        "acc-mixed-order-key-accepted-by-both-equations",
+        "acc-mixed-order-key-equations-disagree",
+        "acc-mixed-order-r-real-key",
+    )
+
+
 class AllVectors(unittest.TestCase):
     def test_every_vector_agrees(self):
         bad = [vid for vid in VECTORS if not agrees(vid)]
         self.assertEqual(bad, [])
-        self.assertEqual(len(VECTORS), 46)
+        self.assertEqual(len(VECTORS), 50)
 
 
 if __name__ == "__main__":

@@ -125,6 +125,23 @@ def is_small_order(data: bytes) -> bool:
         return False
 
 
+def _point_is_torsion_free(point) -> bool:
+    return _point_equal(_point_mul(L, point), IDENTITY)
+
+
+def is_mixed_order(data: bytes) -> bool:
+    """True if `data` encodes a curve point that is neither small-order nor in
+    the prime-order subgroup ([L]P is not the identity). Whether a signature
+    under such a key, or with such an R, verifies depends on whether a
+    verifier uses the cofactored or the cofactorless RFC 8032 equation.
+    False for small-order points, subgroup points and non-points."""
+    try:
+        point = _decode_point(data)
+    except ValueError:
+        return False
+    return not _point_has_small_order(point) and not _point_is_torsion_free(point)
+
+
 class Ed25519VerifyError(ValueError):
     """Raised for a malformed key/signature or a failed verification."""
 
@@ -139,7 +156,9 @@ def verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
     message, if the public key or R is a small-order point: RFC 8032
     does not require refusing those, but under such a key one signature
     (R = identity, S = 0) verifies every message, so accepting it would
-    bind nobody."""
+    bind nobody. Also returns False if the public key or R is a
+    mixed-order point (outside the prime-order subgroup), because two
+    conforming RFC 8032 verifiers can disagree on such a signature."""
     if len(public_key) != 32:
         raise Ed25519VerifyError("public key must be 32 bytes")
     if len(signature) != 64:
@@ -158,6 +177,10 @@ def verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
         raise Ed25519VerifyError(str(exc)) from exc
 
     if _point_has_small_order(a_point) or _point_has_small_order(r_point):
+        return False
+    # A mixed-order key or R: the result would depend on which RFC 8032
+    # equation the verifier uses, so refuse it.
+    if not _point_is_torsion_free(a_point) or not _point_is_torsion_free(r_point):
         return False
 
     k = int.from_bytes(hashlib.sha512(r_bytes + public_key + message).digest(), "little") % L

@@ -83,6 +83,51 @@ class VerifyRefusesSmallOrder(unittest.TestCase):
                 self.assertIs(E.verify(pub, msg, r_enc + ((k * a) % E.L).to_bytes(32, "little")), False)
 
 
+
+def _torsion_point():
+    return E._decode_point(SMALL_ORDER["order-8-a"])
+
+
+class VerifyRefusesMixedOrder(unittest.TestCase):
+    """Sentence 9: a key or R outside the prime-order subgroup ([L]P is not the
+    identity) but not small-order. Whether such a signature verifies depends on
+    the RFC 8032 equation a verifier uses, so verify() refuses both."""
+
+    def _mixed_key_signature(self, msg):
+        a, prefix, pub = _keypair(b"seed-mixed-key")
+        mixed = E._encode_point(E._point_add(E._decode_point(pub), _torsion_point()))
+        r = int.from_bytes(hashlib.sha512(prefix + msg).digest(), "little") % E.L
+        r_enc = E._encode_point(E._point_mul(r, E.B))
+        k = int.from_bytes(hashlib.sha512(r_enc + mixed + msg).digest(), "little") % E.L
+        return mixed, r_enc + ((r + k * a) % E.L).to_bytes(32, "little")
+
+    def _mixed_r_signature(self, msg):
+        a, prefix, pub = _keypair(b"seed-mixed-r")
+        r = int.from_bytes(hashlib.sha512(prefix + msg).digest(), "little") % E.L
+        r_enc = E._encode_point(E._point_add(E._point_mul(r, E.B), _torsion_point()))
+        k = int.from_bytes(hashlib.sha512(r_enc + pub + msg).digest(), "little") % E.L
+        return pub, r_enc + ((r + k * a) % E.L).to_bytes(32, "little")
+
+    def test_mixed_order_key_is_refused(self):
+        msg = b"m"
+        pub, sig = self._mixed_key_signature(msg)
+        self.assertTrue(E.is_mixed_order(pub))
+        self.assertFalse(E.verify(pub, msg, sig))
+
+    def test_mixed_order_r_is_refused(self):
+        msg = b"m"
+        pub, sig = self._mixed_r_signature(msg)
+        self.assertTrue(E.is_mixed_order(sig[:32]))
+        self.assertFalse(E.verify(pub, msg, sig))
+
+    def test_is_mixed_order_is_false_for_good_small_and_non_points(self):
+        _, _, pub = _keypair(b"seed-good")
+        self.assertFalse(E.is_mixed_order(pub))
+        for name, enc in SMALL_ORDER.items():
+            with self.subTest(point=name):
+                self.assertFalse(E.is_mixed_order(enc))
+        self.assertFalse(E.is_mixed_order(b"\x02" + b"\x00" * 31))
+
 class VerifyStillWorks(unittest.TestCase):
     def test_genuine_signature_verifies(self):
         for seed in (b"\x01" * 32, b"\x07" * 32, bytes(range(32))):

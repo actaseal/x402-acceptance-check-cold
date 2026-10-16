@@ -20,28 +20,35 @@ before being used here.
 
 Vectors: `examples/acceptance-record-cold/vectors.json` from
 [babyblueviper1/preaction-governance-conformance](https://github.com/babyblueviper1/preaction-governance-conformance)
-at commit `37fdb856d8fef1c410e69bbd81070da67dd945d8` (`37fdb85`), 46 vectors,
-sha256 `464ee7933a17c3ab52db32b93ac21f555a026781f4a8a132b91977eb4fb02882` —
+at commit `6e487f0e2253e1d5fcfbf0fd5048018f55119279` (`6e487f0`), 50 vectors,
+sha256 `bc0fd4f5c5a0dc29cb4f9cf5fe9bb0d66ee88f91f9e03a74e64f4eb51707f1dd` —
 fetched and verified by `run_vectors.py` before every run.
 
-## Result: 46/46 agree (2026-10-13)
+## Result: 50/50 agree (2026-10-16)
 
-Measured at checker commit `05dff1e` and again after each later change (the
-disposition fix, then the `ed25519_verify` and canonical-base64url hardening
-described below); every time 46/46. Two comparisons exist and they are not
-equally strict:
-
-| Comparison | Compares | 46 vectors |
-|---|---|---|
-| `python3 run_vectors.py` | `result`, `conditions` (as a set), `disposition` when the vector pins one | 46/46 |
-| `tests/` (`AllVectors`, upstream runner's definition) | the above **plus every other expected member**: `key_step`, `policy_refusal` | 46/46 |
+| Comparison | Compares | 50 vectors at `6e487f0` | 46 vectors at `37fdb85` |
+|---|---|---|---|
+| `python3 run_vectors.py` | `result`, `conditions` (as a set), `disposition` when the vector pins one | 50/50 | 46/46 |
+| `tests/` (`AllVectors`, upstream runner's definition) | the above **plus every other expected member**: `key_step`, `policy_refusal` | 50/50 | not re-pinned |
 
 `run_vectors.py` does **not** compare `key_step` or `policy_refusal`, both of
 which the vectors pin; a checker that omitted them would still pass it. The
-tests would not. The full suite is 28 tests (`python3 -m unittest discover -s
+tests would not. The full suite is 32 tests (`python3 -m unittest discover -s
 tests`), all passing.
 
-## History: 22/25, then 23/46, then 46/46
+**Sentence 9, 2026-10-16.** The corpus grew from 46 to 50 vectors (47: a
+whitespace-only `confirming_party`; 48-50: mixed-order points). Against them
+the `41d9071` checker scored 47/50: it returned `verified` for all three
+sentence-9 vectors. The fix, with tests written first (7 failures before, 0
+after): `ed25519_verify.is_mixed_order()` (a curve point that is neither
+small-order nor in the prime-order subgroup, `[L]P` not the identity);
+`verify()` returns `False` for a mixed-order key or `R`; `checker.py` treats a
+mixed-order trust-material key as unresolved (`key_unresolved`) and a
+mixed-order `R` as `signature_invalid`, as sentence 9 says. Written from the
+upstream README's sentence 9 and the vectors only; the reference checker and
+the other implementations were not opened.
+
+## History: 22/25, then 23/46, then 46/46, then 50/50
 
 **Original build (`b06ca87`) at upstream `646588c`: 22/25** on every field a
 vector pins. Three disagreements, reducing to two reading differences:

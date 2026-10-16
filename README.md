@@ -16,21 +16,24 @@ deliberate way: `verify()` returns `False` for a public key or `R` that is a
 small-order point (under such a key one signature verifies every message), so
 it is safe to use on its own.
 
-## Measured state (2026-10-13)
+## Measured state (2026-10-16)
 
-**46/46 vectors agree** against `examples/acceptance-record-cold/vectors.json`
+**50/50 vectors agree** against `examples/acceptance-record-cold/vectors.json`
 from
 [babyblueviper1/preaction-governance-conformance](https://github.com/babyblueviper1/preaction-governance-conformance)
-at commit `37fdb856d8fef1c410e69bbd81070da67dd945d8` (`37fdb85`; the file
-itself last changed at `536681b`), sha256
-`464ee7933a17c3ab52db32b93ac21f555a026781f4a8a132b91977eb4fb02882`. The file
+at commit `6e487f0e2253e1d5fcfbf0fd5048018f55119279` (`6e487f0`, where the file
+last changed), sha256
+`bc0fd4f5c5a0dc29cb4f9cf5fe9bb0d66ee88f91f9e03a74e64f4eb51707f1dd`. The file
 is fetched over the network and hash-verified by `run_vectors.py` before every
 run; it is pinned by commit id, not vendored here.
 
-- Measured at checker commit `05dff1e` (46/46), and again after each later
-  change (the disposition fix, then the `ed25519_verify` and canonical-base64url
-  hardening): 46/46, and `python3 -m unittest discover -s tests` runs 28
-  tests, all passing.
+- Sentence 9 (mixed-order keys and `R`, vectors 48-50) is implemented at the
+  commit that moved the pin to `6e487f0`: before it, this checker returned
+  `verified` for all three. The same checker still agrees 46/46 with the
+  earlier 46-vector file at `37fdb85` (no regression).
+  `python3 -m unittest discover -s tests` runs 32 tests, all passing.
+- Earlier: 46/46 at `37fdb85` with checker `41d9071` (28 tests), first measured
+  at `05dff1e`.
 - Before that: **22/25** at upstream `646588c` with checker `b06ca87` (the
   original build), and 23/46 when that same original checker was run against
   the 46-vector file under the strict comparison below. The three original
@@ -48,7 +51,7 @@ run; it is pinned by commit id, not vendored here.
   returned — the definition the upstream runner uses. `AllVectors` asserts all
   46 agree under it.
 
-So `run_vectors.py` alone reporting 46/46 would not catch a checker that
+So `run_vectors.py` alone reporting 50/50 would not catch a checker that
 dropped `key_step`; the test suite would. Run both.
 
 ### Sentence-8 choices (the upstream README asks each implementation to state them)
@@ -117,5 +120,5 @@ header.
   strict all-46 comparison.
 - `tests/test_ed25519_verify.py` — `verify()` on its own: all 8 small-order
   points as key and as `R`, genuine and tampered signatures, malformed input.
-- `REPORT.md` — measured results, the history from 22/25 to 46/46, and what
+- `REPORT.md` — measured results, the history from 22/25 to 46/46 and then 50/50, and what
   was changed at each step.
