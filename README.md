@@ -122,3 +122,16 @@ header.
   points as key and as `R`, genuine and tampered signatures, malformed input.
 - `REPORT.md` — measured results, the history from 22/25 to 46/46 and then 50/50, and what
   was changed at each step.
+
+## Mutation test: which rules the vectors pin
+
+`mutate.py` removes or loosens one rule of `checker.py` at a time (28 mutations, in memory only) and re-runs the vectors.
+A mutation the vectors catch is KILLED; one that still agrees with every vector SURVIVED, so no vector pins that rule.
+
+```
+python3 mutate.py          # 50 vectors at upstream 6e487f0   -> survivors: 14 of 28
+python3 mutate.py --pr16   # 54 vectors proposed in upstream PR #16 -> survivors: 10 of 28
+```
+
+Both downloads are pinned by commit and sha256-checked. The four vectors added in PR #16 pin uppercase hex digests,
+six-digit timestamp fractions, signer-is-issuer by delegation, and the record digest over non-ASCII text.
