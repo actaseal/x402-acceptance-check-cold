@@ -123,13 +123,33 @@ def _parse_timestamp(value) -> datetime | None:
         return None
 
 
+def _refuse_numbers(obj) -> None:
+    if isinstance(obj, bool) or obj is None or isinstance(obj, str):
+        return
+    if isinstance(obj, (int, float)):
+        raise ValueError(
+            f"_jcs_bytes refuses numbers ({obj!r}): json.dumps writes 1.0, -0.0 and 1e-05 "
+            "where RFC 8785 writes ECMAScript Number::toString, so the digest would not be a JCS digest"
+        )
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _refuse_numbers(k)
+            _refuse_numbers(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _refuse_numbers(v)
+
+
 def _jcs_bytes(obj) -> bytes:
     """A JCS (RFC 8785) serialization sufficient for this spec's
-    records: they are flat objects of string members only, no numbers
-    or floats whose exact ECMAScript formatting JCS otherwise has
-    strict rules for. Recursive key sorting + compact separators +
-    non-ASCII left unescaped (ensure_ascii=False) matches JCS for this
-    shape; this is NOT a general-purpose JCS implementation."""
+    records: they are flat objects of string members only. It REFUSES
+    any number (ValueError) rather than write one: JCS formats numbers
+    as ECMAScript Number::toString, which json.dumps does not (1.0,
+    -0.0, 1e-05), so a digest over a number would silently not be a JCS
+    digest. Recursive key sorting + compact separators + non-ASCII left
+    unescaped (ensure_ascii=False) matches JCS for string-only data;
+    this is NOT a general-purpose JCS implementation."""
+    _refuse_numbers(obj)
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
@@ -340,9 +360,15 @@ def check_acceptance(case: dict) -> dict:
     if payload_record_digest is None:
         conditions.add("acceptance_member_invalid")
     elif record_well_typed:
-        computed = hashlib.sha256(_jcs_bytes(accepted_record)).hexdigest()
-        if computed != payload_record_digest:
-            conditions.add("acceptance_record_digest_mismatch")
+        try:
+            computed = hashlib.sha256(_jcs_bytes(accepted_record)).hexdigest()
+        except ValueError:
+            # a number in a string-only record: it is not a record of this
+            # format, and no digest of it can be a JCS digest
+            conditions.add("acceptance_member_invalid")
+        else:
+            if computed != payload_record_digest:
+                conditions.add("acceptance_record_digest_mismatch")
 
     if issuer is None or issuer_kid is None:
         conditions.add("acceptance_member_invalid")
