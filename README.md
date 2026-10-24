@@ -135,3 +135,5 @@ python3 mutate.py --pr16   # 54 vectors proposed in upstream PR #16 -> survivors
 
 Both downloads are pinned by commit and sha256-checked. The four vectors added in PR #16 pin uppercase hex digests,
 six-digit timestamp fractions, signer-is-issuer by delegation, and the record digest over non-ASCII text.
+
+Preprint using these checkers and batteries: *Conformance suites that pass but do not pin: mutation testing of agent receipt verifiers*, https://doi.org/10.5281/zenodo.23610510
